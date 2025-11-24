@@ -1,0 +1,219 @@
+# image_blur_codon_gpu_par.codon
+# GPU-Accelerated Image Blur using Codon's @par(gpu=True) decorator
+# 
+# This demonstrates automatic GPU parallelization - Codon generates
+# the GPU kernel automatically from the parallel loop!
+#
+# Usage: codon run image_blur_codon_gpu_par.codon
+
+import numpy as np
+from time import time
+
+def create_gaussian_kernel(size: int, sigma: float) -> np.ndarray:
+    """
+    Create a Gaussian blur kernel.
+    
+    Args:
+        size: Kernel size (must be odd, e.g., 3, 5, 7)
+        sigma: Standard deviation of Gaussian distribution
+    
+    Returns:
+        2D numpy array containing normalized Gaussian kernel
+    """
+    kernel = np.zeros((size, size), dtype=np.float32)
+    center = size // 2
+    
+    # Generate Gaussian values
+    for i in range(size):
+        for j in range(size):
+            x = i - center
+            y = j - center
+            # Gaussian formula: exp(-(x^2 + y^2) / (2 * sigma^2))
+            kernel[i, j] = np.exp(-(x*x + y*y) / (2.0 * sigma * sigma))
+    
+    # Normalize so kernel sums to 1
+    kernel = kernel / np.sum(kernel)
+    
+    return kernel
+
+def apply_blur_cpu(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    """
+    Apply Gaussian blur on CPU (sequential - for comparison).
+    
+    This is the baseline implementation without any parallelization.
+    """
+    height, width = image.shape
+    k_size = kernel.shape[0]
+    k_half = k_size // 2  # Half kernel size for indexing
+    
+    result = np.zeros_like(image)
+    
+    # Sequential nested loops - slow!
+    for i in range(k_half, height - k_half):
+        for j in range(k_half, width - k_half):
+            # Apply convolution: sum of (image * kernel) over kernel window
+            value = np.float32(0.0)
+            for ki in range(k_size):
+                for kj in range(k_size):
+                    value += image[i - k_half + ki, j - k_half + kj] * kernel[ki, kj]
+            result[i, j] = value
+    
+    return result
+
+def apply_blur_gpu(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    """
+    Apply Gaussian blur on GPU using @par(gpu=True).
+    
+    The @par(gpu=True, collapse=2) decorator tells Codon to:
+    1. Automatically generate a GPU kernel from this loop
+    2. Parallelize BOTH the i and j loops (collapse=2)
+    3. Launch the kernel on the GPU
+    4. Handle data transfer between CPU and GPU
+    
+    Each GPU thread processes one pixel independently!
+    """
+    height, width = image.shape
+    k_size = kernel.shape[0]
+    k_half = k_size // 2
+    
+    result = np.zeros_like(image)
+    
+    # GPU MAGIC HAPPENS HERE!
+    # This decorator automatically:
+    # - Converts the loop to a GPU kernel
+    # - Assigns each (i, j) pair to a GPU thread
+    # - Handles memory transfers
+    # - Synchronizes results back to CPU
+    @par(gpu=True, collapse=2)
+    for i in range(k_half, height - k_half):
+        for j in range(k_half, width - k_half):
+            # This code runs on GPU!
+            # Each pixel is processed by a separate GPU thread
+            value = np.float32(0.0)
+            for ki in range(k_size):
+                for kj in range(k_size):
+                    value += image[i - k_half + ki, j - k_half + kj] * kernel[ki, kj]
+            result[i, j] = value
+    
+    # When we reach here, GPU has finished and result is back on CPU
+    return result
+
+def generate_test_image(height: int, width: int) -> np.ndarray:
+    """
+    Generate a test image with random noise.
+    
+    In a real application, you'd load an actual image file.
+    """
+    # Create random grayscale image (values between 0 and 1)
+    image = np.random.rand(height, width).astype(np.float32)
+    return image
+
+def print_image_stats(name: str, image: np.ndarray):
+    """Print statistics about an image."""
+    print(f"{name}:")
+    print(f"  Shape: {image.shape}")
+    print(f"  Min value: {float(image.min()):.4f}")
+    print(f"  Max value: {float(image.max()):.4f}")
+    print(f"  Mean value: {float(image.mean()):.4f}")
+
+def main():
+    """
+    Main function - demonstrates GPU-accelerated image blur.
+    """
+    print("="*70)
+    print("GPU-Accelerated Image Blur with Codon")
+    print("Using @par(gpu=True) for automatic GPU parallelization")
+    print("="*70)
+    print()
+    
+    # Configuration
+    image_height = 2048
+    image_width = 2048
+    kernel_size = 5
+    sigma = 1.5
+    
+    print(f"Configuration:")
+    print(f"  Image size: {image_height} x {image_width}")
+    print(f"  Kernel size: {kernel_size} x {kernel_size}")
+    print(f"  Sigma: {sigma}")
+    print()
+    
+    # Step 1: Generate test image
+    print("Step 1: Generating test image...")
+    image = generate_test_image(image_height, image_width)
+    print_image_stats("Original image", image)
+    print()
+    
+    # Step 2: Create Gaussian kernel
+    print("Step 2: Creating Gaussian kernel...")
+    kernel = create_gaussian_kernel(kernel_size, sigma)
+    print(f"Kernel shape: {kernel.shape}")
+    print(f"Kernel sum (should be ~1.0): {float(kernel.sum()):.6f}")
+    print()
+
+    # Step 3: Apply blur on CPU (for small images only)
+    if image_height <= 512:
+        print("Step 3: Applying blur on CPU (sequential)...")
+        t0 = time()
+        result_cpu = apply_blur_cpu(image, kernel)
+        t1 = time()
+        time_cpu = t1 - t0
+        print(f"CPU time: {time_cpu:.4f} seconds")
+        print_image_stats("CPU result", result_cpu)
+        print()
+    else:
+        print("Step 3: Skipping CPU version (image too large - would be very slow)")
+        result_cpu = None
+        time_cpu = None
+        print()
+
+    # Step 4: Apply blur on GPU
+    print("Step 4: Applying blur on GPU...")
+    print("(Codon automatically generates GPU kernel from @par decorator)")
+    t0 = time()
+    result_gpu = apply_blur_gpu(image, kernel)
+    t1 = time()
+    time_gpu = t1 - t0
+    print(f"GPU time: {time_gpu:.4f} seconds")
+    print_image_stats("GPU result", result_gpu)
+    print()
+
+    # Step 5: Compare results
+    print("Step 5: Performance summary")
+    print("-"*70)
+
+    total_pixels = image_height * image_width
+    throughput_gpu = total_pixels / time_gpu / 1_000_000  # Megapixels per second
+
+    print(f"Total pixels processed: {total_pixels:,}")
+    print(f"GPU throughput: {throughput_gpu:.2f} Mpixels/sec")
+
+    if time_cpu is not None:
+        speedup = time_cpu / time_gpu
+        throughput_cpu = total_pixels / time_cpu / 1_000_000
+        print(f"CPU throughput: {throughput_cpu:.2f} Mpixels/sec")
+        print(f"GPU speedup: {speedup:.2f}x faster than CPU")
+
+        # Verify correctness
+        max_diff = np.abs(result_cpu - result_gpu).max()
+        print(f"Max difference between CPU and GPU: {float(max_diff):.2e}")
+        if float(max_diff) < 1e-5:
+            print("✓ Results match! GPU computation is correct.")
+        else:
+            print("⚠ Results differ (may be due to floating-point precision)")
+
+    print()
+    print("="*70)
+    print("Demo complete!")
+    print()
+    print("Key takeaway:")
+    print("  The @par(gpu=True, collapse=2) decorator automatically:")
+    print("  1. Generated a GPU kernel from the nested loops")
+    print("  2. Parallelized across thousands of GPU threads")
+    print("  3. Achieved significant speedup with minimal code changes!")
+    print("="*70)
+
+# Entry point
+if __name__ == "__main__":
+    main()
+

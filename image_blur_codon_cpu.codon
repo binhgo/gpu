@@ -1,0 +1,209 @@
+# image_blur_codon_cpu.codon
+# CPU-Accelerated Image Blur using Codon's @par decorator (multi-threading)
+# 
+# This version uses CPU parallelization instead of GPU, so it works
+# on systems without CUDA/GPU support.
+#
+# Usage: codon run image_blur_codon_cpu.codon
+
+import numpy as np
+from time import time
+
+def create_gaussian_kernel(size: int, sigma: float) -> np.ndarray:
+    """
+    Create a Gaussian blur kernel.
+    
+    Args:
+        size: Kernel size (must be odd, e.g., 3, 5, 7)
+        sigma: Standard deviation of Gaussian distribution
+    
+    Returns:
+        2D numpy array containing normalized Gaussian kernel
+    """
+    kernel = np.zeros((size, size), dtype=np.float32)
+    center = size // 2
+    
+    # Generate Gaussian values
+    for i in range(size):
+        for j in range(size):
+            x = i - center
+            y = j - center
+            # Gaussian formula: exp(-(x^2 + y^2) / (2 * sigma^2))
+            kernel[i, j] = np.exp(-(x*x + y*y) / (2.0 * sigma * sigma))
+    
+    # Normalize so kernel sums to 1
+    kernel = kernel / np.sum(kernel)
+    
+    return kernel
+
+def apply_blur_sequential(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+    """
+    Apply Gaussian blur sequentially (single-threaded).
+    
+    This is the baseline implementation without any parallelization.
+    """
+    height, width = image.shape
+    k_size = kernel.shape[0]
+    k_half = k_size // 2  # Half kernel size for indexing
+    
+    result = np.zeros_like(image)
+    
+    # Sequential nested loops - slow!
+    for i in range(k_half, height - k_half):
+        for j in range(k_half, width - k_half):
+            # Apply convolution: sum of (image * kernel) over kernel window
+            value = np.float32(0.0)
+            for ki in range(k_size):
+                for kj in range(k_size):
+                    value += image[i - k_half + ki, j - k_half + kj] * kernel[ki, kj]
+            result[i, j] = value
+    
+    return result
+
+def apply_blur_parallel(image: np.ndarray, kernel: np.ndarray, num_threads: int = 16) -> np.ndarray:
+    """
+    Apply Gaussian blur using CPU parallelization with @par decorator.
+    
+    The @par decorator tells Codon to:
+    1. Parallelize the outer loop across multiple CPU threads
+    2. Automatically handle thread synchronization
+    3. Distribute work evenly across threads
+    
+    Each thread processes multiple rows of the image independently!
+    """
+    height, width = image.shape
+    k_size = kernel.shape[0]
+    k_half = k_size // 2
+    
+    result = np.zeros_like(image)
+    
+    # CPU PARALLELIZATION HAPPENS HERE!
+    # This decorator automatically:
+    # - Splits the loop iterations across CPU threads
+    # - Handles thread creation and synchronization
+    # - No race conditions (each thread writes to different rows)
+    @par(schedule='static', num_threads=num_threads)
+    for i in range(k_half, height - k_half):
+        for j in range(k_half, width - k_half):
+            # This code runs on multiple CPU threads in parallel!
+            value = np.float32(0.0)
+            for ki in range(k_size):
+                for kj in range(k_size):
+                    value += image[i - k_half + ki, j - k_half + kj] * kernel[ki, kj]
+            result[i, j] = value
+    
+    # When we reach here, all threads have finished
+    return result
+
+def generate_test_image(height: int, width: int) -> np.ndarray:
+    """
+    Generate a test image with random noise.
+    
+    In a real application, you'd load an actual image file.
+    """
+    # Create random grayscale image (values between 0 and 1)
+    image = np.random.rand(height, width).astype(np.float32)
+    return image
+
+def print_image_stats(name: str, image: np.ndarray):
+    """Print statistics about an image."""
+    print(f"{name}:")
+    print(f"  Shape: {image.shape}")
+    print(f"  Min value: {float(image.min()):.4f}")
+    print(f"  Max value: {float(image.max()):.4f}")
+    print(f"  Mean value: {float(image.mean()):.4f}")
+
+def main():
+    """
+    Main function - demonstrates CPU-parallelized image blur.
+    """
+    print("="*70)
+    print("CPU-Parallelized Image Blur with Codon")
+    print("Using @par for automatic multi-threading")
+    print("="*70)
+    print()
+    
+    # Configuration
+    image_height = 1024
+    image_width = 1024
+    kernel_size = 5
+    sigma = 1.5
+    num_threads = 16
+    
+    print(f"Configuration:")
+    print(f"  Image size: {image_height} x {image_width}")
+    print(f"  Kernel size: {kernel_size} x {kernel_size}")
+    print(f"  Sigma: {sigma}")
+    print(f"  CPU threads: {num_threads}")
+    print()
+    
+    # Step 1: Generate test image
+    print("Step 1: Generating test image...")
+    image = generate_test_image(image_height, image_width)
+    print_image_stats("Original image", image)
+    print()
+    
+    # Step 2: Create Gaussian kernel
+    print("Step 2: Creating Gaussian kernel...")
+    kernel = create_gaussian_kernel(kernel_size, sigma)
+    print(f"Kernel shape: {kernel.shape}")
+    print(f"Kernel sum (should be ~1.0): {float(kernel.sum()):.6f}")
+    print()
+
+    # Step 3: Apply blur sequentially
+    print("Step 3: Applying blur sequentially (single-threaded)...")
+    t0 = time()
+    result_seq = apply_blur_sequential(image, kernel)
+    t1 = time()
+    time_seq = t1 - t0
+    print(f"Sequential time: {time_seq:.4f} seconds")
+    print_image_stats("Sequential result", result_seq)
+    print()
+
+    # Step 4: Apply blur in parallel
+    print(f"Step 4: Applying blur in parallel ({num_threads} threads)...")
+    print("(Codon automatically parallelizes across CPU threads)")
+    t0 = time()
+    result_par = apply_blur_parallel(image, kernel, num_threads)
+    t1 = time()
+    time_par = t1 - t0
+    print(f"Parallel time: {time_par:.4f} seconds")
+    print_image_stats("Parallel result", result_par)
+    print()
+
+    # Step 5: Compare results
+    print("Step 5: Performance summary")
+    print("-"*70)
+
+    total_pixels = image_height * image_width
+    throughput_seq = total_pixels / time_seq / 1_000_000  # Megapixels per second
+    throughput_par = total_pixels / time_par / 1_000_000
+    speedup = time_seq / time_par
+
+    print(f"Total pixels processed: {total_pixels:,}")
+    print(f"Sequential throughput: {throughput_seq:.2f} Mpixels/sec")
+    print(f"Parallel throughput: {throughput_par:.2f} Mpixels/sec")
+    print(f"Speedup: {speedup:.2f}x faster with {num_threads} threads")
+
+    # Verify correctness
+    max_diff = np.abs(result_seq - result_par).max()
+    print(f"Max difference between sequential and parallel: {float(max_diff):.2e}")
+    if float(max_diff) < 1e-5:
+        print("✓ Results match! Parallel computation is correct.")
+    else:
+        print("⚠ Results differ (may be due to floating-point precision)")
+
+    print()
+    print("="*70)
+    print("Demo complete!")
+    print()
+    print("Key takeaway:")
+    print(f"  The @par decorator automatically parallelized the blur across")
+    print(f"  {num_threads} CPU threads, achieving {speedup:.2f}x speedup!")
+    print("  This works on any system without requiring GPU/CUDA.")
+    print("="*70)
+
+# Entry point
+if __name__ == "__main__":
+    main()
+
